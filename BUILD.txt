@@ -1,0 +1,39 @@
+Rebuilding
+==========
+
+Run from this project folder ("Source"). The publish target is the sibling
+Build folder (Applications\Convert_UI_Assets\Build), which is the one that
+gets distributed/zipped:
+
+    dotnet publish -c Release -r win-x64 --self-contained true ^
+        -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true ^
+        -p:DebugType=none -o "..\Build"
+
+Close the app first - the publish fails if Convert_UI_Assets_BG3.exe is locked.
+
+texconv.exe AND lib\LICENSE-texconv.txt (required by its MIT license - see
+that file for the full text) are both `<None CopyToOutputDirectory>` items
+in the .csproj, so `dotnet publish` copies them into the output's lib\
+folder automatically - no manual re-copy step needed. Just confirm both
+files exist in the output afterwards as a sanity check.
+
+
+Before packing
+--------------
+Clear any leftover config.json / crash.log / stale .pdb from previous test
+runs in the output folder before zipping - they aren't part of a fresh build
+and shouldn't ship:
+
+    Remove-Item "..\Build\config.json", "..\Build\crash.log", "..\Build\*.pdb" -Force -ErrorAction SilentlyContinue
+
+
+Notes
+-----
+--self-contained true            no .NET runtime needed on the target machine;
+                                 this is what makes the exe ~48 MB
+-p:PublishSingleFile=true        one exe instead of a folder of DLLs
+-p:EnableCompressionInSingleFile compresses the bundled runtime
+-p:DebugType=none                no .pdb alongside the exe
+
+bin\ and obj\ are build scratch and can be deleted at any time. The IDE's C#
+extension may recreate them just from opening the source files.
