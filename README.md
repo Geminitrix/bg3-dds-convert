@@ -7,6 +7,9 @@ No more washed-out, overly bright, or invisible icons caused by mismatched compr
 ## Features
 
 - **16 game-accurate DDS profiles** — Class Icons, Hotbar Icons, Ability Score Icons, Character Creation icons (abilities, backgrounds, deities, races, legacy resources), Proficiency and Skill Icons, Equipment Slot Icons, Tooltip Icons, and Controller UI Icons — each matched to the real compression format, mip count, and pixel dimensions found in the game's own files.
+- **Complete class icon sets** — one 300×300 image picked as "Class Icon (Large + Hotbar)" produces all four files BG3 uses for every class *and* subclass: `ClassIcons` 300, `ClassIcons\hotbar` 140, and their `AssetsLowRes` halves 152 and 72.
+- **Output verification** — after each conversion the app reads the written DDS header back (size, mip count, DXGI format) and warns if anything is off; at the end of a batch it names any icon missing one of its files.
+- **Mod metadata** — declares every converted icon in the mod's `GUI\metadata.lsf.lsx` (created or updated in place, never reformatted). If the mod only has the BG3 Toolkit's binary `metadata.lsf`, it is left alone and the entries to add are listed in the log instead. See [META-RECIPE.md](META-RECIPE.md).
 - **Automatic File Type & folder detection** — drop in an image and the app reads its pixel dimensions; when the size uniquely matches a known category, it picks the right Asset Type and destination subfolder for you.
 - **Locate BG3 GUI Folder** — one click finds your mod's `Data\Mods\<ModName>\GUI` folder from your Steam installation (including secondary Steam libraries) and fills in both destination paths.
 - **Dual-resolution export** — converts every source image into `Assets` (full resolution) and `AssetsLowRes` (50% downscale) in one pass.

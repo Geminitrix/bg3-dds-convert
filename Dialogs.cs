@@ -243,11 +243,14 @@ public sealed class HelpDialog : Form
         AddHeader("help.assetTypeIntro.header");
         AddBody("help.assetTypeIntro.body");
 
-        AddHeader("help.uiIcon.header");
-        AddBody("help.uiIcon.body");
+        AddHeader("help.classIcon.header");
+        AddBody("help.classIcon.body");
 
         AddHeader("help.ccIcon.header");
         AddBody("help.ccIcon.body");
+
+        AddHeader("help.metadata.header");
+        AddBody("help.metadata.body");
 
         AddHeader("help.atlas.header");
         AddBody("help.atlas.body");

@@ -34,6 +34,9 @@ public sealed class MainForm : Form
     readonly Button _browseAssets = new();
     readonly Button _browseLowRes = new();
     readonly Button _locateGuiButton = new();
+    readonly CheckBox _metadataCheck = new();
+    readonly TextBox _metadataBox = new();
+    readonly Button _browseMetadata = new();
     readonly GroupBox _destinationGroup = new();
     readonly ToolTip _toolTip = new();
 
@@ -189,6 +192,10 @@ public sealed class MainForm : Form
         _browseAssets.Text = Loc.T("dest.browse");
         _browseLowRes.Text = Loc.T("dest.browse");
         _locateGuiButton.Text = Loc.T("dest.locateGui");
+        _metadataCheck.Text = Loc.T("dest.metadata");
+        _browseMetadata.Text = Loc.T("dest.browse");
+        _toolTip.SetToolTip(_metadataCheck, Loc.T("dest.metadataTooltip"));
+        UpdateMetadataPlaceholder();
 
         _extLabel.Text = Loc.T("toolbar.outputExtension");
         _convertButton.Text = Loc.T(_busy ? "toolbar.cancel" : "toolbar.convertAll");
@@ -299,21 +306,22 @@ public sealed class MainForm : Form
         _destinationGroup.Dock = DockStyle.Top;
         _destinationGroup.Font = Theme.SectionHeader;
         _destinationGroup.Padding = new Padding(Theme.PagePadding, 6, Theme.PagePadding, Theme.PagePadding);
-        _destinationGroup.Height = 162;
+        _destinationGroup.Height = 204;
 
         var grid = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 3,
-            RowCount = 3,
+            RowCount = 4,
             Font = Theme.Body,
         };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
         grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        grid.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        grid.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        grid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3f));
+        grid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3f));
+        grid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.4f));
 
         _locateGuiButton.Dock = DockStyle.Fill;
         _locateGuiButton.Margin = new Padding(4, 2, 4, 6);
@@ -324,9 +332,83 @@ public sealed class MainForm : Form
 
         AddDestinationRow(grid, 1, "Assets", _assetsCombo, _browseAssets, () => _config.RecentAssetsPaths, () => _config.RememberAssetsPath(_assetsCombo.Text));
         AddDestinationRow(grid, 2, "AssetsLowRes", _lowResCombo, _browseLowRes, () => _config.RecentLowResPaths, () => _config.RememberLowResPath(_lowResCombo.Text));
+        AddMetadataRow(grid, 3);
 
         _destinationGroup.Controls.Add(grid);
         return _destinationGroup;
+    }
+
+    /// <summary>
+    /// The metadata.lsf.lsx row: a checkbox to turn the update on/off, and a path box whose
+    /// placeholder always shows the path deduced from the Assets folder - so the target is never
+    /// hidden - while anything typed or browsed into it overrides that deduction.
+    /// </summary>
+    void AddMetadataRow(TableLayoutPanel grid, int row)
+    {
+        _metadataCheck.Dock = DockStyle.Fill;
+        _metadataCheck.Font = Theme.BodyBold;
+        _metadataCheck.AutoEllipsis = true;
+        _metadataCheck.Checked = _config.WriteMetadata;
+        _metadataCheck.CheckedChanged += (_, _) =>
+        {
+            _config.WriteMetadata = _metadataCheck.Checked;
+            _metadataBox.Enabled = _browseMetadata.Enabled = _metadataCheck.Checked && !_busy;
+            _config.Save();
+        };
+
+        _metadataBox.Dock = DockStyle.Fill;
+        _metadataBox.Margin = new Padding(4, 5, 4, 4);
+        _metadataBox.Text = _config.MetadataPathOverride;
+        _metadataBox.TextChanged += (_, _) => _toolTip.SetToolTip(_metadataBox, EffectiveMetadataPath() ?? "");
+        _metadataBox.Leave += (_, _) =>
+        {
+            _config.MetadataPathOverride = _metadataBox.Text.Trim();
+            _config.Save();
+        };
+
+        _browseMetadata.Dock = DockStyle.Fill;
+        _browseMetadata.Margin = new Padding(4);
+        Theme.StyleButton(_browseMetadata);
+        _browseMetadata.Click += (_, _) =>
+        {
+            using var sfd = new SaveFileDialog
+            {
+                FileName = ModMetadata.FileName,
+                Filter = $"{ModMetadata.FileName}|*.lsx|{Loc.T("filedlg.filterAll")}|*.*",
+                OverwritePrompt = false,
+                CheckFileExists = false,
+            };
+            var current = EffectiveMetadataPath();
+            var startDir = current == null ? null : Path.GetDirectoryName(current);
+            if (!string.IsNullOrEmpty(startDir) && Directory.Exists(startDir)) sfd.InitialDirectory = startDir;
+
+            if (sfd.ShowDialog(this) == DialogResult.OK)
+            {
+                _metadataBox.Text = sfd.FileName;
+                _config.MetadataPathOverride = sfd.FileName;
+                _config.Save();
+            }
+        };
+
+        _metadataBox.Enabled = _browseMetadata.Enabled = _metadataCheck.Checked;
+        _assetsCombo.TextChanged += (_, _) => UpdateMetadataPlaceholder();
+
+        grid.Controls.Add(_metadataCheck, 0, row);
+        grid.Controls.Add(_metadataBox, 1, row);
+        grid.Controls.Add(_browseMetadata, 2, row);
+    }
+
+    /// <summary>The hand-picked path if there is one, otherwise the one deduced from the Assets folder (null if neither).</summary>
+    string? EffectiveMetadataPath()
+    {
+        var typed = _metadataBox.Text.Trim();
+        return typed.Length > 0 ? typed : ModMetadata.DeducePath(_assetsCombo.Text);
+    }
+
+    void UpdateMetadataPlaceholder()
+    {
+        _metadataBox.PlaceholderText = ModMetadata.DeducePath(_assetsCombo.Text) ?? Loc.T("dest.metadataNoDeduce");
+        _toolTip.SetToolTip(_metadataBox, EffectiveMetadataPath() ?? "");
     }
 
     /// <summary>
@@ -366,12 +448,16 @@ public sealed class MainForm : Form
 
         SetComboTextSafely(_assetsCombo, Path.Combine(chosen, "Assets"));
         SetComboTextSafely(_lowResCombo, Path.Combine(chosen, "AssetsLowRes"));
+        // A metadata path hand-picked for a previous mod would otherwise silently keep pointing there.
+        _metadataBox.Text = "";
+        _config.MetadataPathOverride = "";
         _config.RememberAssetsPath(_assetsCombo.Text);
         _config.RememberLowResPath(_lowResCombo.Text);
         RefreshComboItems(_assetsCombo, _config.RecentAssetsPaths);
         RefreshComboItems(_lowResCombo, _config.RecentLowResPaths);
         SaveConfigFromUi();
         Log($"Destination folders set to {_assetsCombo.Text} and {_lowResCombo.Text}");
+        Log($"Metadata file: {EffectiveMetadataPath()}");
     }
 
     /// <summary>Every mod folder under any detected Steam library's BG3 install that already has a GUI subfolder.</summary>
@@ -1084,13 +1170,16 @@ public sealed class MainForm : Form
         _cts = new CancellationTokenSource();
         var token = _cts.Token;
 
-        BeginBusyState(pendingItems.Count * ((string.IsNullOrEmpty(assetsDir) ? 0 : 1) + (string.IsNullOrEmpty(lowResDir) ? 0 : 1)));
+        int destinationCount = (string.IsNullOrEmpty(assetsDir) ? 0 : 1) + (string.IsNullOrEmpty(lowResDir) ? 0 : 1);
+        BeginBusyState(pendingItems.Sum(item =>
+            (1 + AssetProfileSpec.Profiles[(int)ParseAssetProfile(item.SubItems[ColAssetType].Text)].Extras.Count) * destinationCount));
 
         var stopwatch = Stopwatch.StartNew();
         Log("--- Starting batch conversion ---");
 
         var overwriteState = new OverwriteState();
         var counters = new BatchCounters();
+        var processed = new List<ProcessedRow>();
         bool cancelled = false;
         bool upperCaseExt = _extensionCombo.SelectedIndex == 0;
 
@@ -1100,28 +1189,49 @@ public sealed class MainForm : Form
 
             string sourceFile = (string)item.Tag!;
             string subfolder = item.SubItems[ColSubfolder].Text;
-            string fileName = item.SubItems[ColFinalName].Text + (upperCaseExt ? ".DDS" : ".dds");
+            string finalName = item.SubItems[ColFinalName].Text;
+            string fileName = finalName + (upperCaseExt ? ".DDS" : ".dds");
             AssetProfile profile = ParseAssetProfile(item.SubItems[ColAssetType].Text);
+            var spec = AssetProfileSpec.Profiles[(int)profile];
             item.SubItems[ColStatus].Text = "Processing…";
             _listView.EnsureVisible(item.Index);
 
+            if (!Converter.TryGetImageSize(sourceFile, out int sourceWidth, out int sourceHeight))
+            {
+                counters.Failed++;
+                Log($"  FAILED    {Path.GetFileName(sourceFile)}  :  failed to read image dimensions");
+                item.SubItems[ColStatus].Text = "Failed";
+                for (int i = 0; i < (1 + spec.Extras.Count) * destinationCount; i++) BumpProgress();
+                UpdateStatus(pendingItems.IndexOf(item) + 1, pendingItems.Count, stopwatch.Elapsed);
+                continue;
+            }
+
+            var outputs = Converter.PlanOutputs(spec, subfolder, sourceWidth, sourceHeight)
+                .Where(o => !string.IsNullOrEmpty(o.IsLowRes ? lowResDir : assetsDir))
+                .ToList();
+            string sizeWarning = Converter.SizeWarning(spec, sourceWidth, sourceHeight);
+
             int convertedCount = 0, skippedCount = 0, failedCount = 0;
 
-            if (!string.IsNullOrEmpty(assetsDir))
+            foreach (var output in outputs)
             {
-                var outcome = await ConvertOne(sourceFile, assetsDir, subfolder, fileName, profile, isHalfRes: false,
-                    overwriteState, counters, token);
+                if (token.IsCancellationRequested) break;
+
+                var outcome = await ConvertOne(sourceFile, output.IsLowRes ? lowResDir : assetsDir, output, fileName, profile,
+                    overwriteState, counters, token, output.IsLowRes ? " [50%]" : "");
                 Tally(outcome, ref convertedCount, ref skippedCount, ref failedCount);
                 BumpProgress();
+
+                // Said once per row - every output comes from the same source, so repeating it adds nothing.
+                if (outcome == ConvertOutcome.Converted && sizeWarning.Length > 0)
+                {
+                    Log($"    WARNING: {sizeWarning}");
+                    sizeWarning = "";
+                }
             }
 
-            if (!token.IsCancellationRequested && !string.IsNullOrEmpty(lowResDir))
-            {
-                var outcome = await ConvertOne(sourceFile, lowResDir, subfolder, fileName, profile, isHalfRes: true,
-                    overwriteState, counters, token, " [50%]");
-                Tally(outcome, ref convertedCount, ref skippedCount, ref failedCount);
-                BumpProgress();
-            }
+            if (!token.IsCancellationRequested)
+                processed.Add(new ProcessedRow(finalName, fileName, spec, outputs));
 
             item.SubItems[ColStatus].Text = token.IsCancellationRequested
                 ? "Cancelled"
@@ -1131,10 +1241,14 @@ public sealed class MainForm : Form
                         ? "Skipped"
                         : "Done";
 
-            UpdateStatus(counters.Done, counters.Skipped, counters.Failed, pendingItems.Count, stopwatch.Elapsed);
+            UpdateStatus(pendingItems.IndexOf(item) + 1, pendingItems.Count, stopwatch.Elapsed);
         }
 
         stopwatch.Stop();
+
+        ReportMissingOutputs(processed, assetsDir, lowResDir);
+        if (_metadataCheck.Checked && !string.IsNullOrEmpty(assetsDir))
+            UpdateModMetadata(processed, assetsDir);
 
         if (cancelled || token.IsCancellationRequested)
             Log($"--- Conversion cancelled — {counters.Done} created, {counters.Skipped} skipped, {counters.Failed} failed ---");
@@ -1143,6 +1257,76 @@ public sealed class MainForm : Form
         Log("");
 
         EndBusyState();
+    }
+
+    /// <summary>A row the batch finished (not cancelled mid-way), with every file it was meant to produce.</summary>
+    sealed record ProcessedRow(string FinalName, string FileName, AssetProfileSpec Spec, List<PlannedOutput> Outputs);
+
+    /// <summary>
+    /// After the batch, checks every planned file of every finished row actually exists on disk - so a
+    /// class icon whose hotbar or low-res copy failed is called out by name, not buried in the log.
+    /// </summary>
+    void ReportMissingOutputs(List<ProcessedRow> rows, string assetsDir, string lowResDir)
+    {
+        foreach (var row in rows)
+        {
+            var missing = row.Outputs
+                .Where(o => !File.Exists(Path.Combine(o.IsLowRes ? lowResDir : assetsDir, o.Subfolder, row.FileName)))
+                .Select(o => Path.Combine(o.IsLowRes ? "AssetsLowRes" : "Assets", o.Subfolder, row.FileName))
+                .ToList();
+
+            if (missing.Count > 0)
+                Log($"  WARNING: \"{row.FinalName}\" is missing {missing.Count} of its {row.Outputs.Count} files: {string.Join(", ", missing)}");
+        }
+    }
+
+    /// <summary>
+    /// Declares every full-res file the batch produced in the mod's metadata.lsf.lsx (one entry per
+    /// Assets file, none for AssetsLowRes), using the size actually written to disk.
+    /// </summary>
+    void UpdateModMetadata(List<ProcessedRow> rows, string assetsDir)
+    {
+        var path = EffectiveMetadataPath();
+        if (path == null)
+        {
+            Log("  Metadata: skipped — the Assets folder isn't named \"Assets\", so metadata.lsf.lsx can't be deduced. Pick it by hand in the Metadata row.");
+            return;
+        }
+
+        var entries = new List<ModMetadata.Entry>();
+        foreach (var row in rows)
+        {
+            int mipCount = int.TryParse(row.Spec.MipArg, out var m) ? m : 1;
+            foreach (var output in row.Outputs.Where(o => !o.IsLowRes))
+            {
+                var file = Path.Combine(assetsDir, output.Subfolder, row.FileName);
+                if (!File.Exists(file)) continue;
+                if (!Converter.TryGetImageSize(file, out int w, out int h)) { w = output.Width; h = output.Height; }
+                entries.Add(new ModMetadata.Entry(ModMetadata.MapKeyFor(output.Subfolder, row.FinalName), w, h, mipCount));
+            }
+        }
+        if (entries.Count == 0) return;
+
+        var result = ModMetadata.Upsert(path, entries);
+        switch (result.Outcome)
+        {
+            case ModMetadata.Outcome.Created:
+                Log($"  Metadata: created {path} with {result.Added} entr{(result.Added == 1 ? "y" : "ies")}");
+                break;
+            case ModMetadata.Outcome.Updated:
+                Log($"  Metadata: {result.Added} added, {result.Changed} updated in {path}");
+                break;
+            case ModMetadata.Outcome.Unchanged:
+                Log($"  Metadata: {path} already declares all {entries.Count} file(s) — left untouched");
+                break;
+            case ModMetadata.Outcome.SkippedBinaryOnly:
+                Log($"  Metadata: skipped — {result.Message}. Make sure these entries exist (e.g. via the Toolkit):");
+                foreach (var e in entries) Log($"    {e.MapKey}  {e.Width}x{e.Height}, mipcount {e.MipCount}");
+                break;
+            default:
+                Log($"  Metadata: NOT written ({path}) — {result.Message}");
+                break;
+        }
     }
 
     /// <summary>Tracks "Yes to All" / "No to All" overwrite choices across an entire batch run.</summary>
@@ -1182,12 +1366,12 @@ public sealed class MainForm : Form
         return AssetProfile.Custom;
     }
 
-    async Task<ConvertOutcome> ConvertOne(string sourceFile, string baseDir, string subfolder, string fileName, AssetProfile profile, bool isHalfRes,
+    async Task<ConvertOutcome> ConvertOne(string sourceFile, string baseDir, PlannedOutput output, string fileName, AssetProfile profile,
         OverwriteState overwriteState, BatchCounters counters, CancellationToken cancellationToken, string logSuffix = "")
     {
         try
         {
-            string destDir = Path.Combine(baseDir, subfolder);
+            string destDir = Path.Combine(baseDir, output.Subfolder);
             Directory.CreateDirectory(destDir);
             string destPath = Path.Combine(destDir, fileName);
 
@@ -1198,13 +1382,14 @@ public sealed class MainForm : Form
                 return ConvertOutcome.Skipped;
             }
 
-            ConvertResult result = await Task.Run(() => SafeConvert(sourceFile, destPath, profile, isHalfRes, cancellationToken), cancellationToken);
+            ConvertResult result = await Task.Run(() => SafeConvert(sourceFile, destPath, profile, output.Width, output.Height, cancellationToken), cancellationToken);
             if (result.Success)
             {
                 counters.Done++;
-                Log($"  OK{logSuffix}        {Path.GetFileName(sourceFile)}  ->  {destPath}");
-                if (!string.IsNullOrEmpty(result.Warning))
-                    Log($"    WARNING: {result.Warning}");
+                Log($"  OK{logSuffix}        {Path.GetFileName(sourceFile)}  ->  {destPath}  ({output.Width}x{output.Height})");
+                var headerProblem = Converter.VerifyDds(destPath, AssetProfileSpec.Profiles[(int)profile], output.Width, output.Height);
+                if (headerProblem.Length > 0)
+                    Log($"    WARNING: {headerProblem}");
                 return ConvertOutcome.Converted;
             }
 
@@ -1235,11 +1420,11 @@ public sealed class MainForm : Form
     }
 
     /// <summary>Wraps the external Converter call, catching any exception it throws so a single bad file can't abort the batch.</summary>
-    static ConvertResult SafeConvert(string sourceFile, string destPath, AssetProfile profile, bool isHalfRes, CancellationToken cancellationToken)
+    static ConvertResult SafeConvert(string sourceFile, string destPath, AssetProfile profile, int width, int height, CancellationToken cancellationToken)
     {
         try
         {
-            return Converter.Convert(sourceFile, destPath, isHalfRes, profile, cancellationToken);
+            return Converter.Convert(sourceFile, destPath, profile, width, height, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -1312,13 +1497,16 @@ public sealed class MainForm : Form
         _lowResCombo.Enabled = enabled;
         _browseLowRes.Enabled = enabled;
         _locateGuiButton.Enabled = enabled;
+        _metadataCheck.Enabled = enabled;
+        _metadataBox.Enabled = _browseMetadata.Enabled = enabled && _metadataCheck.Checked;
         _clearListButton.Enabled = enabled;
         _listView.Enabled = enabled;
     }
 
-    void UpdateStatus(int done, int skipped, int failed, int total, TimeSpan elapsed)
+    /// <summary>Counts rows, not files - one row can produce several files (e.g. a Class Icon writes four).</summary>
+    void UpdateStatus(int rowsProcessed, int totalRows, TimeSpan elapsed)
     {
-        _itemCountLabel.Text = $"{done + skipped + failed}/{total} processed  •  {elapsed:mm\\:ss}";
+        _itemCountLabel.Text = $"{rowsProcessed}/{totalRows} processed  •  {elapsed:mm\\:ss}";
     }
 
     // ======================================================================
@@ -1350,6 +1538,7 @@ public sealed class MainForm : Form
     {
         _config.AssetsPath = _assetsCombo.Text;
         _config.AssetsLowResPath = _lowResCombo.Text;
+        _config.MetadataPathOverride = _metadataBox.Text.Trim();
         _config.Save();
     }
 

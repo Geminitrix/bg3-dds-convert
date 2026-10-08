@@ -17,6 +17,9 @@ public sealed class AppConfig
     public string AssetsLowResPath { get; set; } = "";
     public bool UpperCaseExtension { get; set; } = true;
     public string Language { get; set; } = "en";
+    public bool WriteMetadata { get; set; } = true;
+    /// <summary>Hand-picked metadata.lsf.lsx path; empty means "deduce it from AssetsPath".</summary>
+    public string MetadataPathOverride { get; set; } = "";
     public List<string> RecentAssetsPaths { get; set; } = new();
     public List<string> RecentLowResPaths { get; set; } = new();
 

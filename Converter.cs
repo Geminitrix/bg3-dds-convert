@@ -16,7 +16,6 @@ public sealed class ConvertResult
     public bool Success { get; init; }
     public bool Skipped { get; init; }
     public string Note { get; init; } = "";
-    public string Warning { get; init; } = "";
 }
 
 /// <summary>
@@ -63,8 +62,16 @@ public enum AssetProfile
 /// no single fixed size (used both to auto-detect a File Type from a dropped image's dimensions, and
 /// to warn - not block - when a chosen File Type doesn't match the actual source image).
 /// </param>
-public sealed record AssetProfileSpec(string DisplayName, string TexconvFormat, string MipArg, string Subfolder, int ExpectedWidth, int ExpectedHeight)
+/// <param name="Companions">
+/// Extra full-resolution files the same source image also produces, each at a fixed size and in a
+/// subfolder nested under the row's own Subfolder (so a hand-edited Subfolder still carries them
+/// along). Each companion also gets its own AssetsLowRes half-size copy, exactly like the main output.
+/// </param>
+public sealed record AssetProfileSpec(string DisplayName, string TexconvFormat, string MipArg, string Subfolder, int ExpectedWidth, int ExpectedHeight,
+    IReadOnlyList<CompanionOutput>? Companions = null)
 {
+    public IReadOnlyList<CompanionOutput> Extras => Companions ?? Array.Empty<CompanionOutput>();
+
     // Index in this array must match the AssetProfile enum's declaration order (used as a direct index below).
     // Dimensions/paths below were measured directly from real DDS headers extracted from the game's own
     // GUI\Assets tree (patch 8), cross-checked against mod.io/bg3.wiki community guides - several of those
@@ -74,7 +81,12 @@ public sealed record AssetProfileSpec(string DisplayName, string TexconvFormat, 
     {
         new AssetProfileSpec("Custom / Other (BC7)", "BC7_UNORM", "1", "", 0, 0),
 
-        new AssetProfileSpec("Class Icon", "BC7_UNORM", "1", "ClassIcons", 300, 300),
+        // Every class AND every subclass ships in all four class-icon folders (verified in the vanilla
+        // .paks, e.g. GustavX's Hexblade/Bladesinging): ClassIcons 300 / ClassIcons\hotbar 140, plus
+        // their AssetsLowRes halves 152 / 72. Screens that use the large icon show nothing at all for a
+        // subclass that only has the hotbar pair, so one source image always produces the whole set.
+        new AssetProfileSpec("Class Icon (Large + Hotbar)", "BC7_UNORM", "1", "ClassIcons", 300, 300,
+            new[] { new CompanionOutput("hotbar", 140, 140) }),
         new AssetProfileSpec("Class Icon (Hotbar)", "BC7_UNORM", "1", "ClassIcons\\hotbar", 140, 140),
         new AssetProfileSpec("Ability Score Icon", "BC7_UNORM", "1", "AbilityIcons", 184, 184),
 
@@ -103,6 +115,15 @@ public sealed record AssetProfileSpec(string DisplayName, string TexconvFormat, 
     };
 }
 
+/// <summary>An extra full-res file a profile also produces from the same source - see AssetProfileSpec.Companions.</summary>
+public sealed record CompanionOutput(string SubfolderSuffix, int Width, int Height);
+
+/// <summary>
+/// One DDS file a queued row produces: its subfolder (relative to Assets or AssetsLowRes, depending
+/// on IsLowRes) and the exact, already block-aligned size it gets written at.
+/// </summary>
+public sealed record PlannedOutput(string Subfolder, int Width, int Height, bool IsLowRes);
+
 public static class Converter
 {
     public static string AppDir =>
@@ -122,7 +143,38 @@ public static class Converter
     // Safety net for a texconv.exe process that never exits (corrupt input, I/O stall, etc.).
     const int ProcessTimeoutMs = 120_000;
 
-    public static ConvertResult Convert(string source, string dest, bool isHalfRes, AssetProfile profile, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Every file one source image produces under a profile, full-res and half-res, main output first
+    /// then each companion. Every profile this app produces is a 4x4 block-compressed format (BC7 or
+    /// BC1), which Direct3D requires to be block-aligned - a source image whose width or height isn't
+    /// a multiple of 4 (e.g. 301x300) still compresses "successfully" with no complaint from texconv,
+    /// but the game silently fails to load the resulting texture at runtime (verified: texconv itself
+    /// warns "Direct3D requires BC image to be multiple of 4 in width & height" when decoding such a
+    /// file back). So every size here is resolved explicitly and rounded, never left to texconv.
+    /// </summary>
+    public static List<PlannedOutput> PlanOutputs(AssetProfileSpec spec, string subfolder, int sourceWidth, int sourceHeight)
+    {
+        var outputs = new List<PlannedOutput>();
+
+        void AddPair(string folder, int width, int height)
+        {
+            outputs.Add(new PlannedOutput(folder, RoundToBlockAlignment(width), RoundToBlockAlignment(height), IsLowRes: false));
+            outputs.Add(new PlannedOutput(folder, RoundToBlockAlignment(Math.Max(1, width / 2)), RoundToBlockAlignment(Math.Max(1, height / 2)), IsLowRes: true));
+        }
+
+        AddPair(subfolder, sourceWidth, sourceHeight);
+        foreach (var companion in spec.Extras)
+            AddPair(Path.Combine(subfolder, companion.SubfolderSuffix), companion.Width, companion.Height);
+        return outputs;
+    }
+
+    /// <summary>Non-blocking hint for when a source image doesn't match the size real files of its chosen category use.</summary>
+    public static string SizeWarning(AssetProfileSpec spec, int sourceWidth, int sourceHeight) =>
+        spec.ExpectedWidth > 0 && (sourceWidth != spec.ExpectedWidth || sourceHeight != spec.ExpectedHeight)
+            ? $"source is {sourceWidth}x{sourceHeight}, but real \"{spec.DisplayName}\" files are {spec.ExpectedWidth}x{spec.ExpectedHeight} - double-check the File Type"
+            : "";
+
+    public static ConvertResult Convert(string source, string dest, AssetProfile profile, int targetWidth, int targetHeight, CancellationToken cancellationToken = default)
     {
         var spec = AssetProfileSpec.Profiles[(int)profile];
         var destDir = Path.GetDirectoryName(dest) ?? AppDir;
@@ -134,26 +186,6 @@ public static class Converter
             return new ConvertResult { Source = source, Dest = dest, Note = "file not found" };
 
         Directory.CreateDirectory(destDir);
-
-        // Every profile this app produces is a 4x4 block-compressed format (BC7 or BC1), which
-        // Direct3D requires to be block-aligned - a source image whose width or height isn't a
-        // multiple of 4 (e.g. 301x300) still compresses "successfully" with no complaint from
-        // texconv, but the game silently fails to load the resulting texture at runtime (verified:
-        // texconv itself warns "Direct3D requires BC image to be multiple of 4 in width & height"
-        // when decoding such a file back). Always resolve an explicit, rounded target size instead
-        // of letting texconv pass the source's native (possibly unaligned) dimensions through.
-        if (!TryGetImageSize(source, out int sourceWidth, out int sourceHeight))
-            return new ConvertResult { Source = source, Dest = dest, Note = "failed to read image dimensions" };
-
-        int targetWidth = RoundToBlockAlignment(isHalfRes ? Math.Max(1, sourceWidth / 2) : sourceWidth);
-        int targetHeight = RoundToBlockAlignment(isHalfRes ? Math.Max(1, sourceHeight / 2) : sourceHeight);
-
-        // Only checked against the full-res pass - the half-res pass is derived from the same
-        // source, so flagging it too would just repeat the same warning a second time per file.
-        string sizeWarning = !isHalfRes && spec.ExpectedWidth > 0
-            && (sourceWidth != spec.ExpectedWidth || sourceHeight != spec.ExpectedHeight)
-            ? $"source is {sourceWidth}x{sourceHeight}, but real \"{spec.DisplayName}\" files are {spec.ExpectedWidth}x{spec.ExpectedHeight} - double-check the File Type"
-            : "";
 
         if (cancellationToken.IsCancellationRequested)
             return new ConvertResult { Source = source, Dest = dest, Note = "cancelled" };
@@ -260,7 +292,7 @@ public static class Converter
             if (!string.Equals(produced, dest, StringComparison.Ordinal))
                 RenameExact(produced, dest);
 
-            return new ConvertResult { Source = source, Dest = dest, Success = true, Warning = sizeWarning };
+            return new ConvertResult { Source = source, Dest = dest, Success = true };
         }
         finally
         {
@@ -291,6 +323,72 @@ public static class Converter
     /// keeps an already-close source (e.g. 301) at 300 instead of pushing it out to 304.
     /// </summary>
     static int RoundToBlockAlignment(int value) => Math.Max(4, ((value + 2) / 4) * 4);
+
+    /// <summary>
+    /// Reads a written DDS file's header back and checks it against what was asked for: size, mip
+    /// count, and pixel format. Returns "" when everything matches, otherwise a short description of
+    /// each mismatch. Header layout: height @12, width @16, mip count @28 (only meaningful when the
+    /// DDSD_MIPMAPCOUNT flag @8 is set - otherwise it's a single level), FourCC @84, and for a "DX10"
+    /// FourCC the DXGI format @128.
+    /// </summary>
+    public static string VerifyDds(string path, AssetProfileSpec spec, int expectedWidth, int expectedHeight)
+    {
+        var header = new byte[148];
+        try
+        {
+            using var fs = File.OpenRead(path);
+            if (fs.Read(header, 0, header.Length) < 128) return "header check: file too short to be a DDS";
+        }
+        catch (Exception ex)
+        {
+            return "header check: could not read the file back (" + ex.Message + ")";
+        }
+
+        if (header[0] != (byte)'D' || header[1] != (byte)'D' || header[2] != (byte)'S' || header[3] != (byte)' ')
+            return "header check: not a DDS file";
+
+        var problems = new List<string>();
+
+        int height = BitConverter.ToInt32(header, 12);
+        int width = BitConverter.ToInt32(header, 16);
+        if (width != expectedWidth || height != expectedHeight)
+            problems.Add($"size {width}x{height}, expected {expectedWidth}x{expectedHeight}");
+
+        const int DdsdMipMapCount = 0x20000;
+        int flags = BitConverter.ToInt32(header, 8);
+        int mips = (flags & DdsdMipMapCount) != 0 ? Math.Max(1, BitConverter.ToInt32(header, 28)) : 1;
+        if (int.TryParse(spec.MipArg, out int expectedMips) && mips != expectedMips)
+            problems.Add($"{mips} mip(s), expected {expectedMips}");
+
+        string fourCc = Encoding.ASCII.GetString(header, 84, 4);
+        var (expectedDxgi, legacyFourCc) = ExpectedPixelFormat(spec.TexconvFormat);
+        if (fourCc == "DX10")
+        {
+            int dxgi = BitConverter.ToInt32(header, 128);
+            if (expectedDxgi != 0 && dxgi != expectedDxgi)
+                problems.Add($"DXGI format {dxgi}, expected {expectedDxgi} ({spec.TexconvFormat})");
+        }
+        else if (legacyFourCc == null || fourCc != legacyFourCc)
+        {
+            problems.Add($"pixel format \"{fourCc.TrimEnd('\0')}\", expected {spec.TexconvFormat}");
+        }
+
+        return problems.Count == 0 ? "" : "header check: " + string.Join("; ", problems);
+    }
+
+    /// <summary>
+    /// The DXGI format number a texconv format name writes, plus the legacy (pre-DX10) FourCC texconv
+    /// uses for it instead when one exists - BC1 comes out as a plain "DXT1" header, matching the
+    /// game's own legacy-header files.
+    /// </summary>
+    static (int Dxgi, string? LegacyFourCc) ExpectedPixelFormat(string texconvFormat) => texconvFormat switch
+    {
+        "BC7_UNORM" => (98, null),
+        "BC7_UNORM_SRGB" => (99, null),
+        "BC3_UNORM" => (77, "DXT5"),
+        "BC1_UNORM" => (71, "DXT1"),
+        _ => (0, null),
+    };
 
     /// <summary>
     /// Reads just the pixel dimensions of an image. System.Drawing handles the common raster
